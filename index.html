@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<meta charset="UTF-8">
+
+	<link rel="stylesheet" type="text/css" href="style.css"> 
+
+	<script src="https://d3js.org/d3.v5.min.js"></script>
+	<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+	<script src="https://d3js.org/topojson.v2.min.js"></script>
+
+	<!-- 	Slider Reference: https://bl.ocks.org/johnwalley/e1d256b81e51da68f7feb632a53c3518 -->
+	<script src="https://unpkg.com/d3-simple-slider"></script>
+	<link rel="stylesheet" href="./radio.css">
+
+	<title>INFO 3300 Project 2</title>
+</head>
+
+<body>
+	<div id="main_container">
+		<h1 style="color: grey;font-family: Arial;text-align: center">U.S. Wildfires and Weather Trends (1992-2015)</h1>
+		<div id="textArea">
+			<p>This presentation shows the trend of US Class-G* wildfires as well as relevant weather information throughout the years 1992-2015. Drag the slider to inspect changes over time; timeline granularity can be changed between year and month to see different trends. Select weather overlay with buttons beneath the slider. Fire causes can be inspected by hovering over appropriate donut chart segment. Note that circle size maps to relative fire size.</p>
+		</div>
+		
+		<div id ="timeGranularitySelector" class="n-radio-label">
+			<input type="radio" name="timeGranularity" value="Year" checked="checked" onclick="updateTimeGranularity('YEAR')" class="n-radio">
+			<span>Year</span>
+			<input type="radio" name="timeGranularity" value="Month" onclick="updateTimeGranularity('MONTH')" class="n-radio">
+			<span>Month</span>
+		</div>
+		<div id="slider"></div>
+		<div id="choroplethAttrSelector">
+			<button type="button" class="overlayButton overlayButtonSelected" name="choroplethAttr" id="pcp" value="Precipitation" checked="checked" onclick="updateChoroplethAttr('PCP')">Total Annual Precipitation</button>
+			<button type="button" class="overlayButton" name="choroplethAttr" id="tavg" value="AverageTemperature" onclick="updateChoroplethAttr('TAVG')">Average Annual Temperature</button>
+			<button type="button" class="overlayButton" name="choroplethAttr" id="pdsi" value="DroughtSeverity" onclick="updateChoroplethAttr('PDSI')">Average Annual Drought Severity</button>
+		</div>
+		
+		<div id="mapWrapperDiv">
+				<svg id="mapWrapperSvg" width="1300" height="650" transform="translate(50,0)">
+					<g id="sliderlegend" transform="translate(0,70)">
+				</svg>
+		</div>
+
+		<script>
+			// Global svg constants
+			let svg = d3.select("#mapWrapperSvg");
+			let width = svg.attr("width") - 300;
+			let height = svg.attr("height");
+			let margin = { top: 30, bottom: 20, right: 20, left: 20 };
+			let mapWidth = width - margin.left - margin.right;
+			let mapHeight = height - margin.top - margin.bottom;
+			let map = svg.append("g")
+				.attr("transform", "translate("+margin.left+","+margin.top+")");
+			let selectedYearMonth = 199201; // Default date
+			let selectedStateId = null;
+			let circleWrapper = svg.append("g").attr("id","circleWrapper")
+				.attr("transform","translate("+margin.left+","+margin.top+")");
+			let selectedChoroplethAttr = "PCP"; // Default choropleth attr
+			function updateChoroplethAttr(attr) {
+				selectedChoroplethAttr = attr;
+				updateChoropleth();
+				updateLegend();
+				if (attr == "PCP"){
+					document.getElementById("tavg").className = "overlayButton";
+					document.getElementById("pdsi").className = "overlayButton";
+					document.getElementById("pcp").className = "overlayButton overlayButtonSelected";
+				}else if(attr == "TAVG"){
+					document.getElementById("pcp").className = "overlayButton";
+					document.getElementById("pdsi").className = "overlayButton";
+					document.getElementById("tavg").className = "overlayButton overlayButtonSelected";
+				}else{
+					document.getElementById("tavg").className = "overlayButton";
+					document.getElementById("pcp").className = "overlayButton";
+					document.getElementById("pdsi").className = "overlayButton overlayButtonSelected";
+				}
+			}
+			let selectedTimeGranularity = "YEAR"; // Default time granularity
+			function updateTimeGranularity(timeGranularity) {
+				selectedTimeGranularity = timeGranularity;
+				selectedYearMonth = 199201;
+				updateChoropleth();
+				updateLegend();
+				drawSlider();
+				updateChoroplethAttrButtonNames();
+			}
+			// Data and related info
+			let weatherData = null;
+			let yearlyWeatherData = [];
+			let stateCodes = null;
+			let mapIdToWeatherId = {};
+			let mapIdToStateName = {};
+			let fireData = [];
+			let minFireSize = 1000000;
+			let maxFireSize = 0;
+			let fireSizeScale = null;
+			let causeColors = {"Lightning": "#f9cd60", "Miscellaneous": "#c9b9bd", "Missing/Undefined" : "#683F37", "Equipment Use" : "#c77b3d", "Arson" : "#562633", "Debris Burning" : "#9E352C", "Campfire" : "#69140E", "Powerline" : "#51344D"};
+			// Set to opposite value when donut segment is clicked
+			let causeClicked = {"Lightning": false, "Miscellaneous": false, "MissingUndefined" : false, "EquipmentUse" : false, "Arson" : false, "DebrisBurning" : false, "Campfire" : false, "Powerline" : false};
+			let precipitationMinMax_year = null
+			let precipitationMinMax_month = null;
+			let precipitationColorScale_year = null;
+			let precipitationColorScale_month = null;
+			let tempColorScale_year = null;
+			let tempColorScale_month = null;
+			let tempMinMax_year = null;
+			let tempMinMax_month = null;
+			let droughtColorScale_year = null;
+			let droughtColorScale_month = null;
+			let droughtMinMax_year = null;
+			let droughtMinMax_month = null;
+			let projection = null;
+			let init = async () => {
+				let us = await d3.json("datasets/us.json");
+				let states = topojson.feature(us, us.objects.states);
+				let statesMesh = topojson.mesh(us, us.objects.states);
+				projection = d3.geoAlbersUsa().fitSize([mapWidth, mapHeight], states);
+				let path = d3.geoPath().projection(projection);
+				map.selectAll("path").data(states.features)
+					.enter()
+					.append("path")
+					.attr("class", "state")
+					.attr("d", path);
+				map.append("path")
+					.datum(statesMesh)
+					.attr("class", "outline")
+					.attr("d", path);
+				d3.selectAll(".state").style("stroke", function(d) {
+					if (d.id == 2 || d.id == 15) {
+						return "grey";
+					} else {
+						return "white"
+					}
+				});
+				// Begin Choropleth code
+				weatherData = await d3.csv("datasets/state_weather_history.csv");
+				stateCodes = await d3.csv("datasets/state_codes.csv");
+				stateCodes.forEach( d => {
+					mapIdToWeatherId[d.MapCode] = d.WeatherCode;
+					mapIdToStateName[d.MapCode] = d.State;
+				});
+				let currentYear = 1992;
+				let totalPrecip = 0;
+				let totalDrought = 0;
+				let totalTemp = 0;
+				
+				weatherData.forEach( (d, i) => {
+					d['YearMonth'] = Number(d['YearMonth']);
+					d['StateCode'] = Number(d['StateCode']);
+					d['PCP'] = Number(d['PCP']);
+					d['TAVG'] = Number(d['TAVG']);
+					d['PDSI'] = Number(d['PDSI']);
+					// Build yearly aggregated dataset
+					if (Math.floor(d['YearMonth']/100) > currentYear) {
+						yearlyWeatherData.push({StateCode:d['StateCode'], Year:currentYear, PCP:totalPrecip, PDSI:totalDrought/12, TAVG:totalTemp/12});
+						currentYear += 1;
+						totalPrecip = 0;
+						totalDrought = 0;
+						totalTemp = 0;
+					}
+					if (d['YearMonth'] == 201512) {
+						yearlyWeatherData.push({StateCode:d['StateCode'], Year:currentYear, PCP:totalPrecip, PDSI:totalDrought/12, TAVG:totalTemp/12});
+						currentYear = 1992;
+						totalPrecip = 0;
+						totalDrought = 0;
+						totalTemp = 0;
+					}
+					totalPrecip += d['PCP'];
+					totalTemp += d['TAVG'];
+					if (d['PDSI'] == -99.99) {
+						d['PDSI'] = null; // Alaska doesn't have PDSI data
+					} else {
+						totalDrought += d['PDSI'];
+					}
+				});
+				precipitationMinMax_year = d3.extent(yearlyWeatherData, d => d.PCP);
+				precipitationColorScale_year = d3.scaleSequential(d3.interpolateBlues)
+					.domain(precipitationMinMax_year);
+				precipitationMinMax_month = d3.extent(weatherData, d => d.PCP);
+				precipitationColorScale_month = d3.scaleSequential(d3.interpolateBlues).domain(precipitationMinMax_month);
+				tempMinMax_year = d3.extent(yearlyWeatherData, d => d.TAVG);
+				tempColorScale_year = d3.scaleSequential(d3.interpolateRdYlBu)
+					.domain([tempMinMax_year[1],tempMinMax_year[0]]);
+				tempMinMax_month = d3.extent(weatherData, d => d.TAVG);
+				tempColorScale_month = d3.scaleSequential(d3.interpolateRdYlBu)
+					.domain([tempMinMax_month[1],tempMinMax_month[0]]);
+				droughtMinMax_year = d3.extent(yearlyWeatherData, d => d.PDSI);
+				droughtColorScale_year = d3.scaleSequential(d3.interpolateYlGn)
+					.domain(droughtMinMax_year);
+				droughtMinMax_month = d3.extent(weatherData, d => d.PDSI);
+				droughtColorScale_month = d3.scaleSequential(d3.interpolateYlGn)
+					.domain(droughtMinMax_month);
+				// load fire data 
+				fireData = await d3.csv("datasets/fires.csv");
+				let causeDict = {};
+				let donutData = [];
+				fireData.forEach((d,i) => {
+					d["FIRE_NAME"] = String(d["FIRE_NAME"]);
+					d["DISCOVERY_DOY"] = Number(d["DISCOVERY_DOY"]);
+					d["FIRE_YEAR"] = Number(d["FIRE_YEAR"]);
+					d["STAT_CAUSE_DESCR"] = String(d["STAT_CAUSE_DESCR"]);
+					if (d["STAT_CAUSE_DESCR"] in causeDict) {
+						causeDict[d["STAT_CAUSE_DESCR"]] +=1;
+					} else {
+						causeDict[d["STAT_CAUSE_DESCR"]] = 1 
+					};
+					d["FIRE_SIZE"] = Number(d["FIRE_SIZE"]);
+					if (d["FIRE_SIZE"] > maxFireSize){
+						maxFireSize = d["FIRE_SIZE"];
+					}else if(d["FIRE_SIZE"] < minFireSize){
+						minFireSize = d["FIRE_SIZE"];
+					}
+					d["LATITUDE"] = Number(d["LATITUDE"]);
+					d["LONGITUDE"] = Number(d["LONGITUDE"]);
+					d["STATE"] = String(d["STATE"])
+					d["CONT_DOY"] = d["CONT_DOY"] != "" ? Number(d["CONT_DOY"]) : null;
+					d["CONT_DATE"] = d["CONT_DATE"] != "" ? Math.floor(Number(d["CONT_DATE"])) : null;
+					d["DISCOVERY_DATE"] = d["DISCOVERY_DATE"] != "" ? Math.floor(Number(d["DISCOVERY_DATE"])) : null;
+				});
+				fireSizeScale = d3.scaleLinear().domain([minFireSize,maxFireSize]).range([40,2500]);
+				causeScale = d3.scaleOrdinal(d3.schemeCategory10);
+				for (let key in causeDict) {
+					let id1 = key.replace(" ", "");
+					let id2 = key.replace("/", "");
+					let donutVal = {"cause":key, "incidents": causeDict[key], id:id2};
+					donutData.push(donutVal);
+				}
+			
+				// EDIT DATA 
+				// if less than 50 incidences remove from pie chart 
+				for (let i=0; i<donutData.length; i++) {
+					if (donutData[i].incidents<50) {
+						donutData[2].incidents =  donutData[2].incidents+ donutData[i].incidents;
+						donutData.splice(i,1);
+					}
+					if (donutData[i].cause == "Railroad") {
+						donutData[2].incidents =  donutData[2].incidents+ donutData[i].incidents;						donutData.splice(i,1);
+					}
+					if (donutData[i].cause == "Fireworks") {
+						donutData[2].incidents =  donutData[2].incidents+ donutData[i].incidents;						donutData.splice(i,1);
+					}
+				}
+		
+				// create donut chart 
+				// referenced https://www.youtube.com/watch?v=P8KNr0pDqio
+				let donut = svg.append("g")
+								.attr("id", "donut")
+								.attr("transform", "translate("+1000+","+350+")")
+								.attr("width", 475)
+								.attr("height", 475);
+				let donutWidth = donut.attr("width")/2;
+				let donutHeight = donut.attr("height")/2;
+				let outerR = donutWidth/2;
+				let innerR = outerR/2;
+				// referenced https://d3-wiki.readthedocs.io/zh_CN/master/Ordinal-Scales/
+				let incidentMax = d3.max(donutData, function(d){return d.incidents;});
+				let incidentMin = d3.min(donutData, function(d){return d.incidents;});
+				let chartData = d3.pie()
+								.value(function(d){return d.incidents;})
+								.sort(null)
+								(donutData);
+				let edges = d3.arc()
+							.outerRadius(outerR)
+							.innerRadius(innerR)
+				let donutPath = donut.append("g")
+								.attr("transform", "translate("+donutWidth/2+","+donutHeight/2+")")
+								.selectAll("path")
+								.data(chartData)
+								.enter()
+								.append("path")
+								.attr("class", "cause")
+								.attr("d",edges)
+								.attr("id", function(d) {
+									let id = d.data.cause.replace(" ", "");
+									let id2 = id.replace("/","");
+									return id2;
+									})
+								.attr("stroke-width", 3)
+								.attr("stroke", function(d){
+									return causeColors[d.data.cause]
+									})
+								.attr("fill", function(d){
+									return causeColors[d.data.cause];
+									});
+				// creating donut legend : referenced http://bl.ocks.org/erichoco/6694616
+				let donutLegend = donut.append("circle")
+								.attr("id", "donutLegend")
+								.attr("transform", "translate("+donutWidth/2+","+donutHeight/2+")")
+								.attr("r", innerR-13)
+								.attr("fill", "lightgrey")
+								.attr("opacity", .5);
+				donutLegend.on("mousedown", function(d){
+					donutLegend.attr("fill", "grey");
+				});
+				donutLegend.on("mouseout", function(d){
+					donutLegend.attr("fill", "lightgrey");
+				});
+				donutLegend.on("mouseup", function(d){
+					for (let cause in causeClicked) {
+						causeClicked[cause] = false;
+					}
+					donutLegend.attr("fill", "lightgrey");
+					let edges = d3.arc()
+							.outerRadius(outerR)
+							.innerRadius(innerR)
+					for (let i=0; i<donutData.length; i++) {
+						let segId = donutData[i].cause.replace(" ", "").replace("/", "");
+						
+						d3.select("#"+segId)
+							.transition().duration(400)
+							.attr("d", edges)
+							.attr("stroke-width", 3)
+							.attr("stroke", function(d){
+									return causeColors[d.data.cause]
+									});
+					}
+					updateChoropleth();
+				});
+				let deselectText = donut.append("text")
+					.attr("id", "deselectText")
+					.attr("transform", "translate("+donutWidth/2+","+(donutHeight/2+5)+")")
+					.style("font-family", "Arial")
+					.style("font-size", 14)
+					.attr("text-anchor","middle")
+					.attr("fill", "slategrey")
+					.style("pointer-events","none")
+					.text("Deselect All");
+				// donut instructions
+				donut.append("text")
+					.attr("transform","translate(120,-55)")
+					.style("font-family", "Arial")
+					.style("font-size", 18)
+					.style("fill", "grey")
+					.attr("text-anchor","middle")
+					.text("Wildfire Causes Breakdown")
+				donut.append("text")
+					.attr("transform","translate(120,-35)")
+					.style("font-family", "Arial")
+					.style("font-size", 18)
+					.style("fill", "grey")
+					.attr("text-anchor","middle")
+					.text("(Total Number All Years)")
+				donut.append("text")
+					.attr("transform","translate(120,-15)")
+					.style("font-family", "Arial")
+					.style("font-size", 14)
+					.style("fill", "lightgrey")
+					.attr("text-anchor","middle")
+					.text("Click on segment to filter fires by cause.")
+				// Drawing the greyed out tooltip box
+				let w = 250;
+				let tooltip = svg.append("g").attr("transform", "translate(1000,"+30+")");
+				let tooltext = tooltip.append("text")
+					.attr("transform","translate(22,70)")
+					.style("font-family", "Arial")
+					.style("font-size", 18)
+					.style("fill", "lightgrey")
+				tooltext.append("tspan")
+					.attr("dy","1.2em")
+					.text("Hover over states or fires");
+				tooltext.append("tspan")
+					.attr("dy","1.2em")
+					.attr("x","0")
+					.text("to see detailed information.");
+				updateChoropleth();
+				updateLegend();
+				weatherMouseover();
+				donutMouseover(outerR, innerR, donutData);
+			};
+			init();
+			function updateChoropleth() {
+				if (selectedTimeGranularity == "YEAR") {
+					let filteredWeatherDataDict = {};
+					let filteredWeatherData = [];
+					yearlyWeatherData.forEach( (d, i) => {
+						if (d['Year'] == Math.floor(selectedYearMonth/100)) {
+							filteredWeatherDataDict[d.StateCode] = d;
+							filteredWeatherData.push(d);
+						}
+					});
+					map.selectAll(".state").style("fill",
+						function(d) {
+							let weatherId = mapIdToWeatherId[d.id];
+							if (weatherId != undefined) {
+								if (selectedChoroplethAttr == "PCP") {
+									let precip = filteredWeatherDataDict[weatherId].PCP;
+									return precipitationColorScale_year(precip);
+								} else if (selectedChoroplethAttr == "TAVG") {
+									let temp = filteredWeatherDataDict[weatherId].TAVG;
+									return tempColorScale_year(temp);
+								} else if (selectedChoroplethAttr == "PDSI") {
+									let drought = filteredWeatherDataDict[weatherId].PDSI;
+									if (weatherId == 50) { // Alaska doesn't have PDSI data
+										return;
+									}
+									return droughtColorScale_year(drought);
+								}
+							}
+						});
+					let anyTrue = false;
+					for (let cause in causeClicked) {
+						if (causeClicked[cause]) {
+							anyTrue = true;
+							break;
+						}
+					}
+					if(anyTrue){
+						updateCauseSelection();
+					}else{
+						let filteredFireData = [];
+						fireData.forEach( (d,i) => {
+							if (d['FIRE_YEAR'] == Math.floor(selectedYearMonth/100)) {
+								filteredFireData.push(d);
+							}
+						});
+		
+						let circles = circleWrapper.selectAll("circle").data(filteredFireData);
+						circles.attr("fill", d => d3.hsl(0,0.5,0.5)).attr("yr",d => d['FIRE_YEAR']);
+						circles.exit().remove();
+						circles.enter().append("circle").merge(circles)
+					        .attr("cx", d => projection([d["LONGITUDE"],d["LATITUDE"]])[0])
+					        .attr("cy", d => projection([d["LONGITUDE"],d["LATITUDE"]])[1])
+					        .attr("r", d => Math.sqrt(fireSizeScale(d["FIRE_SIZE"])/Math.PI))
+					        .style("fill",d => d3.hsl(20,1,0.5))
+					        .style("opacity", 0.6)
+					        .style("stroke", "white")
+					  		.style("stroke-width", "1")
+					        .attr("yr",d => d['FIRE_YEAR']);
+		
+					  circles = circleWrapper.selectAll("circle");
+					  circles.on("mouseover", function(d) {
+					  	d3.select(this)
+					  		.transition().duration(250)
+					  		.attr("r", d => 2*Math.sqrt(fireSizeScale(d["FIRE_SIZE"])/Math.PI))
+					  		.style("stroke", "black")
+					  		.style("stroke-width", "2");
+					  	fireMouseover(d, "mouseover");
+					  }); 
+					  circles.on("mouseout", function(d) {
+					  	d3.select(this)
+					  		.transition().duration(250)
+					  		.attr("r", d => Math.sqrt(fireSizeScale(d["FIRE_SIZE"])/Math.PI))
+					  		.style("stroke", "white")
+					  		.style("stroke-width", "1");
+					  	fireMouseover(d, "mouseout");
+					  });
+					}
+				} else { // selectedTimeGranularity == "MONTH"
+					let filteredWeatherDataDict = {};
+					let filteredWeatherData = [];
+					weatherData.forEach( (d, i) => {
+						if (d['YearMonth'] == selectedYearMonth) {
+							filteredWeatherDataDict[d.StateCode] = d;
+							filteredWeatherData.push(d);
+						}
+					});
+					map.selectAll(".state").style("fill",
+						function(d) {
+							let weatherId = mapIdToWeatherId[d.id];
+							if (weatherId != undefined) {
+								if (selectedChoroplethAttr == "PCP") {
+									let precip = filteredWeatherDataDict[weatherId].PCP;
+									return precipitationColorScale_month(precip);
+								} else if (selectedChoroplethAttr == "TAVG") {
+									let temp = filteredWeatherDataDict[weatherId].TAVG;
+									return tempColorScale_month(temp);
+								} else if (selectedChoroplethAttr == "PDSI") {
+									let drought = filteredWeatherDataDict[weatherId].PDSI;
+									if (weatherId == 50) { // Alaska doesn't have PDSI data
+										return;
+									}
+									return droughtColorScale_month(drought);
+								}
+							}
+						});
+					
+					let anyTrue = false;
+					for (let cause in causeClicked) {
+						if (causeClicked[cause]) {
+							anyTrue = true;
+							break;
+						}
+					}
+					if(anyTrue){
+						updateCauseSelection();
+					}else{
+						let filteredFireData = [];
+						fireData.forEach( (d,i) => {
+							if (d['FIRE_YEAR']*100 + Math.floor(d['DISCOVERY_DOY']/30) == Math.floor(selectedYearMonth)) {
+								filteredFireData.push(d);
+							}
+						});
+						let circles = circleWrapper.selectAll("circle").data(filteredFireData);
+						circles.attr("fill", d => d3.hsl(0,0.5,0.5)).attr("yr",d => d['FIRE_YEAR']);
+						circles.exit().remove();
+						circles.enter().append("circle").merge(circles)
+					        .attr("cx", d => projection([d["LONGITUDE"],d["LATITUDE"]])[0])
+					        .attr("cy", d => projection([d["LONGITUDE"],d["LATITUDE"]])[1])
+					        .attr("r", d => Math.sqrt(fireSizeScale(d["FIRE_SIZE"])/Math.PI))
+					        .style("fill",d => d3.hsl(20,1,0.5))
+					        .style("opacity", 0.6)
+					        .style("stroke", "white")
+					  		.style("stroke-width", "1")
+					        .attr("yr",d => d['FIRE_YEAR']);
+					  circles.on("mouseover", function(d) {
+					  	d3.select(this)
+					  		.transition().duration(250)
+					  		.attr("r", d => 2*Math.sqrt(fireSizeScale(d["FIRE_SIZE"])/Math.PI))
+					  		.style("stroke", "black")
+					  		.style("stroke-width", "2");
+					  	fireMouseover(d, "mouseover");
+					  });
+					  circles.on("mouseout", function(d) {
+					  	d3.select(this)
+					  		.transition().duration(250)
+					  		.attr("r", d => Math.sqrt(fireSizeScale(d["FIRE_SIZE"])/Math.PI))
+					  		.style("stroke", "white")
+					  		.style("stroke-width", "1");
+					  	fireMouseover(d, "mouseout");
+					  });
+					}
+				}
+			}
+			function updateCauseSelection(){
+				if (selectedTimeGranularity == "YEAR") {
+					let filteredFireData = [];
+						fireData.forEach( (d,i) => {
+							if (causeClicked[d['STAT_CAUSE_DESCR'].replace(" ", "").replace("/", "")] && d['FIRE_YEAR'] == Math.floor(selectedYearMonth/100)) {
+								filteredFireData.push(d);
+							}
+						});
+		
+						let circles = circleWrapper.selectAll("circle").data(filteredFireData);
+						circles.style("fill",d => causeColors[d['STAT_CAUSE_DESCR']])
+				        	.style("opacity", 0.9)
+				        	.attr("yr",d => d['FIRE_YEAR']);
+						circles.exit().remove();
+						circles.enter().append("circle").merge(circles)
+					        .attr("cx", d => projection([d["LONGITUDE"],d["LATITUDE"]])[0])
+					        .attr("cy", d => projection([d["LONGITUDE"],d["LATITUDE"]])[1])
+					        .attr("r", d => Math.sqrt(fireSizeScale(d["FIRE_SIZE"])/Math.PI))
+					        .style("fill",d => causeColors[d['STAT_CAUSE_DESCR']])
+				        	.style("opacity", 0.9)
+					        .style("stroke", "white")
+					  		.style("stroke-width", "1")
+					        .attr("yr",d => d['FIRE_YEAR']);
+		
+					  circles = circleWrapper.selectAll("circle");
+					  circles.on("mouseover", function(d) {
+					  	d3.select(this)
+					  		.transition().duration(250)
+					  		.attr("r", d => 2*Math.sqrt(fireSizeScale(d["FIRE_SIZE"])/Math.PI))
+					  		.style("stroke", "black")
+					  		.style("stroke-width", "2");
+					  	fireMouseover(d, "mouseover");
+					  }); 
+					  circles.on("mouseout", function(d) {
+					  	d3.select(this)
+					  		.transition().duration(250)
+					  		.attr("r", d => Math.sqrt(fireSizeScale(d["FIRE_SIZE"])/Math.PI))
+					  		.style("stroke", "white")
+					  		.style("stroke-width", "1");
+					  	fireMouseover(d, "mouseout");
+					  });
+				} else { // selectedTimeGranularity == "MONTH"
+					let filteredFireData = [];
+						fireData.forEach( (d,i) => {
+							if (causeClicked[d['STAT_CAUSE_DESCR'].replace(" ", "").replace("/", "")] && d['FIRE_YEAR']*100 + Math.floor(d['DISCOVERY_DOY']/30) == Math.floor(selectedYearMonth)) {
+								filteredFireData.push(d);
+							}
+						});
+						let circles = circleWrapper.selectAll("circle").data(filteredFireData);
+						circles.style("fill",d => causeColors[d['STAT_CAUSE_DESCR']])
+				        	.style("opacity", 0.9)
+				        	.attr("yr",d => d['FIRE_YEAR']);
+						circles.exit().remove();
+						circles.enter().append("circle").merge(circles)
+					        .attr("cx", d => projection([d["LONGITUDE"],d["LATITUDE"]])[0])
+					        .attr("cy", d => projection([d["LONGITUDE"],d["LATITUDE"]])[1])
+					        .attr("r", d => Math.sqrt(fireSizeScale(d["FIRE_SIZE"])/Math.PI))
+					        .style("fill",d => causeColors[d['STAT_CAUSE_DESCR']])
+				        	.style("opacity", 0.9)
+					        .style("stroke", "white")
+					  		.style("stroke-width", "1")
+					        .attr("yr",d => d['FIRE_YEAR']);
+					  circles.on("mouseover", function(d) {
+					  	d3.select(this)
+					  		.transition().duration(250)
+					  		.attr("r", d => 2*Math.sqrt(fireSizeScale(d["FIRE_SIZE"])/Math.PI))
+					  		.style("stroke", "black")
+					  		.style("stroke-width", "2");
+					  	fireMouseover(d, "mouseover");
+					  });
+					  circles.on("mouseout", function(d) {
+					  	d3.select(this)
+					  		.transition().duration(250)
+					  		.attr("r", d => Math.sqrt(fireSizeScale(d["FIRE_SIZE"])/Math.PI))
+					  		.style("stroke", "white")
+					  		.style("stroke-width", "1");
+					  	fireMouseover(d, "mouseout");
+					  });
+				}
+			}
+			// Begin slider code
+			function drawSlider() {
+				d3.select("#sliderSvg").remove();
+				if (selectedTimeGranularity == "YEAR") {
+					let slider = d3.select("#slider").append("svg").attr("id", "sliderSvg").attr("width", 700).attr("height", 60).append("g").attr("transform", "translate(70,20)");
+					let years = d3.range(0, 24).map(function(d) {
+						return new Date(1992 + d, 1, 1);
+					});
+					let ticks = d3.range(0, 8).map(function(d) {
+						return new Date(1992 + 3*d, 1, 1);
+					});
+					slider.call(d3.sliderBottom()
+						.min(d3.min(years))
+						.max(d3.max(years))
+						.step(1000 * 60 * 60 * 24 * 365)
+						.width(600)
+						.tickFormat(d3.timeFormat('%Y'))
+						.tickValues(ticks)
+						.default(new Date(1992, 0, 1))
+						.on('onchange', val => {
+							d3.select("p#value-time").text(d3.timeFormat("%Y"));
+							selectedYearMonth = Number(val.getFullYear().toString()+"01");
+							updateChoropleth();
+						}));
+				} else { // selectedTimeGranularity == "MONTH"
+					let slider = d3.select("#slider").append("svg").attr("id", "sliderSvg").attr("width", 700).attr("height", 60).append("g").attr("transform", "translate(70,20)");
+					let yearMonths = d3.range(0, 288).map(function(d) {
+						let year = Math.floor(d/12);
+						let month = d%12;
+						return new Date(1992 + year, month, 1);
+					});
+					let ticks = d3.range(0, 8).map(function(d) {
+						return new Date(1992 + 3*d, 0, 1);
+					});
+					slider.call(d3.sliderBottom()
+						.min(d3.min(yearMonths))
+						.max(d3.max(yearMonths))
+						.step(1000 * 60 * 60 * 24)
+						.width(600)
+						.tickFormat(d3.timeFormat('%b%Y'))
+						.tickValues(ticks)
+						.default(new Date(1992, 0, 1))
+						.on('onchange', val => {
+							d3.select("p#value-time").text(d3.timeFormat('%b%Y'));
+							let month = val.getMonth();
+							if (month < 9) {
+								selectedYearMonth = Number(val.getFullYear().toString()+"0"+(val.getMonth()+1).toString());
+							} else {
+								selectedYearMonth = Number(val.getFullYear().toString()+(val.getMonth()+1).toString());
+							}
+							updateChoropleth();
+						}));
+				}
+				
+			}
+			drawSlider();
+			// Begin legend code
+			d3.select("#sliderlegend").append("svg").attr("id", "legendsvg").attr("width", 120).attr("height", 350).attr("transform","translate(50,0)").append("g").attr("id", "colorLegend");
+			d3.select("#legendsvg").append("g").attr("id", "legendAxis");
+			function updateLegend() {
+				d3.select("#colorLegend").remove();
+				let colorLegend = d3.select("#legendsvg").append("g")
+					.attr("id", "colorLegend")
+					.attr("transform", "translate(20,20)");
+				for (var i = 0; i <= 100; i++) {
+					colorLegend.append("rect")
+						.attr("x", 0)
+						.attr("y", i*3)
+						.attr("width", 20)
+						.attr("height", 3)
+						.style("fill", function() {
+							if (selectedChoroplethAttr == "PCP") {
+								return d3.scaleSequential(d3.interpolateBlues)(i*0.01); 
+							} else if (selectedChoroplethAttr == "TAVG") {
+								return d3.scaleSequential(d3.interpolateRdYlBu)(i*0.01);
+							} else if (selectedChoroplethAttr == "PDSI") {
+								return d3.scaleSequential(d3.interpolateYlGn)(i*0.01);
+							}
+						});
+				}
+				if (selectedChoroplethAttr == "PCP") {
+					if (selectedTimeGranularity == "YEAR") {
+						colorLegend.append("text").attr("x", 53).attr("y", 20).text("inches").style("font-size", 10).style("font-family", "Arial");
+					} else {
+						colorLegend.append("text").attr("x", 53).attr("y", 3).text("inches").style("font-size", 10).style("font-family", "Arial");
+					}
+				} else if (selectedChoroplethAttr == "TAVG") {
+					if (selectedTimeGranularity == "YEAR") {
+						colorLegend.append("text").attr("x", 53).attr("y", 30).text("\xB0F").style("font-size", 10).style("font-family", "Arial");
+					} else {
+						colorLegend.append("text").attr("x", 53).attr("y", 30).text("\xB0F").style("font-size", 10).style("font-family", "Arial");
+					}
+				} else if (selectedChoroplethAttr == "PDSI") {
+					colorLegend.append("text").attr("x", 53).attr("y", 5).text("DRY").style("font-size", 10).style("font-family", "Arial");
+					colorLegend.append("text").attr("x", 53).attr("y", 300).text("WET").style("font-size", 10).style("font-family", "Arial");
+				}
+				d3.select("#legendAxis").remove();
+				let legendAxisGroup = d3.select("#legendsvg").append("g").attr("id", "legendAxis").attr("transform", "translate(50, 20)");
+				let legendScale = null;
+				if (selectedChoroplethAttr == "PCP") {
+					if (selectedTimeGranularity == "YEAR") {
+						legendScale = d3.scaleLinear().domain(precipitationMinMax_year).range([0, 300]);
+					} else {
+						legendScale = d3.scaleLinear().domain(precipitationMinMax_month).range([0, 300]);
+					}
+				} else if (selectedChoroplethAttr == "TAVG") {
+					if (selectedTimeGranularity == "YEAR") {
+						legendScale = d3.scaleLinear().domain(tempMinMax_year).range([300, 0]);
+					} else {
+						legendScale = d3.scaleLinear().domain(tempMinMax_month).range([300, 0]);
+					}
+				} else if (selectedChoroplethAttr == "PDSI") {
+					if (selectedTimeGranularity == "YEAR") {
+						legendScale = d3.scaleLinear().domain(droughtMinMax_year).range([0, 300]);
+					} else {
+						legendScale = d3.scaleLinear().domain(droughtMinMax_month).range([0, 300]);
+					}
+				}
+				let legendAxis = d3.axisRight(legendScale);
+				legendAxisGroup.call(legendAxis);
+				d3.select("#legendsvg").append("rect").attr("x", 20).attr("y", 330).attr("height", 20).attr("width", 20).style("fill", "lightgrey");
+				d3.select("#legendsvg").append("text").attr("x", 45).attr("y", 346).text("No Data").attr("fill", "black").style("font-family", "Arial").style("opacity", .7);
+			}
+			function updateChoroplethAttrButtonNames() {
+				if (selectedTimeGranularity == "YEAR") {
+					document.getElementById("pcp").innerText = "Total Annual Precipitation";
+					document.getElementById("tavg").innerText = "Average Annual Temperature";
+					document.getElementById("pdsi").innerText = "Average Annual Drought Severity";
+				} else {
+					document.getElementById("pcp").innerText = "Total Monthly Precipitation";
+					document.getElementById("tavg").innerText = "Average Monthly Temperature";
+					document.getElementById("pdsi").innerText = "Average Monthly Drought Severity";
+				}
+			}
+			function weatherMouseover() {
+				// Setup static data viewing window
+				let w = 250;
+				let mouseoverBoxG = svg.append("g").attr("transform", "translate(1000,"+30+")");
+				mouseoverBoxG.append("rect")
+					.attr("id", "mouseoverBox")
+					.attr("x", 0)
+					.attr("y", 0)
+					.attr("width", w)
+					.attr("height", 190)
+					.style("stroke-width", 3)
+					.style("stroke", "lightgrey")
+					.style("fill", "none");
+				mouseoverBoxG.append("rect")
+					.attr("id", "titleBox")
+					.attr("x", 0)
+					.attr("y", 0)
+					.attr("width", w)
+					.attr("height", 50)
+					.style("fill", "none")
+					.style("stroke-width", 0) // starts out invisible, appears when mouseover event detected
+					.style("stroke", "lightgrey");
+				mouseoverBoxG.append("text")
+					.attr("id", "mouseoverTitle")
+					.attr("x", w/2)
+					.attr("y", 25)
+					.style("text-anchor", "middle")
+					.style("alignment-baseline", "central")
+					.style("font-size", 30)
+					.style("font-family","Arial")
+					.style("font-color", "black");
+				mouseoverBoxG.append("g")
+					.attr("id", "detailBox")
+					.attr("transform", "translate(0, 50)");
+				// State/Weather-related mouseover
+				map.selectAll(".state").on("mouseover", function(d) {
+					d3.select("#mouseoverBox").style("fill", "white");
+					d3.select("#titleBox").style("stroke-width", 3);
+					selectedStateId = d.id;
+					map.selectAll(".state").style("stroke-width", function(d) {
+						if (selectedStateId == d.id) {
+							return "5";
+						} else {
+							return "1";
+						}
+					});
+					let stateName = function() {
+						if (selectedStateId == 15) {
+							return "Hawaii"; // Hawaii is not in the dataset
+						} else {
+							return mapIdToStateName[selectedStateId];
+						}
+					}
+					d3.select("#mouseoverTitle").text(stateName);
+					let selectedDate = function() {
+						if (selectedTimeGranularity == "YEAR") {
+							return "Year: " + String(Math.floor(selectedYearMonth/100));
+						} else {
+							return "Month/year: " + String(selectedYearMonth%100) + "/" + String(Math.floor(selectedYearMonth/100));
+						}
+					}
+					d3.select("#detailBox").append("text")
+						.attr("x", 10)
+						.attr("y", 25)
+						.style("font-size", 20)
+						.style("font-family","Arial")
+						.text(selectedDate);
+					d3.select("#detailBox").append("text")
+						.attr("x", 10)
+						.attr("y", 50)
+						.style("font-size", 20)
+						.style("font-family","Arial")
+						.text("Weather data:");
+					let stateWeatherData = null;
+					if (selectedTimeGranularity == "YEAR") {
+						yearlyWeatherData.forEach( (d, i) => {
+							if (d['Year'] == Math.floor(selectedYearMonth/100) && d['StateCode'] == mapIdToWeatherId[selectedStateId]) {
+								if (selectedStateId == 2) { // Alaska doesn't have PDSI data
+									stateWeatherData = {PCP:d['PCP'].toFixed(2), TAVG:d['TAVG'].toFixed(2), PDSI:null};
+								} else {
+									stateWeatherData = {PCP:d['PCP'].toFixed(2), TAVG:d['TAVG'].toFixed(2), PDSI:d['PDSI'].toFixed(2)};
+								}
+							}
+						});
+					} else {
+						weatherData.forEach( (d, i) => {
+							if (d['YearMonth'] == selectedYearMonth && d['StateCode'] == mapIdToWeatherId[selectedStateId]) {
+								if (selectedStateId == 2) { // Alaska doesn't have PDSI data
+									stateWeatherData = {PCP:d['PCP'].toFixed(2), TAVG:d['TAVG'].toFixed(2), PDSI:null};
+								} else {
+									stateWeatherData = {PCP:d['PCP'].toFixed(2), TAVG:d['TAVG'].toFixed(2), PDSI:d['PDSI'].toFixed(2)};
+								}
+							}
+						});
+					}
+					if (stateWeatherData == null) { // Hawaii selected
+						stateWeatherData = {PCP: null, TAVG: null, PDSI: null};
+					}
+					d3.select("#titleBox").style("fill", function() { // color title box the same as state color on US map
+						if (selectedChoroplethAttr == "PCP" && stateWeatherData.PCP != null) {
+							if (selectedTimeGranularity == "YEAR" && stateWeatherData.PCP > 55) {
+								d3.select("#mouseoverTitle").style("fill", "white");
+								return precipitationColorScale_year(stateWeatherData.PCP);
+							} else if (selectedTimeGranularity == "YEAR") {
+								d3.select("#mouseoverTitle").style("fill", "black");
+								return precipitationColorScale_year(stateWeatherData.PCP);
+							} else if (selectedTimeGranularity == "MONTH" && stateWeatherData.PCP > 11) {
+								d3.select("#mouseoverTitle").style("fill", "white");
+								return precipitationColorScale_month(stateWeatherData.PCP);
+							} else {
+								d3.select("#mouseoverTitle").style("fill", "black");
+								return precipitationColorScale_month(stateWeatherData.PCP);
+							}
+						} else if (selectedChoroplethAttr == "TAVG" && stateWeatherData.TAVG != null) {
+							if (selectedTimeGranularity == "YEAR" && stateWeatherData.TAVG > 65) {
+								d3.select("#mouseoverTitle").style("fill", "white");
+								return tempColorScale_year(stateWeatherData.TAVG);
+							} else if (selectedTimeGranularity == "YEAR" && stateWeatherData.TAVG < 30) {
+								d3.select("#mouseoverTitle").style("fill", "white");
+								return tempColorScale_year(stateWeatherData.TAVG);
+							} else if (selectedTimeGranularity == "YEAR") {
+								d3.select("#mouseoverTitle").style("fill", "black");
+								return tempColorScale_year(stateWeatherData.TAVG);
+							} else if (selectedTimeGranularity == "MONTH" && stateWeatherData.TAVG > 75) {
+								d3.select("#mouseoverTitle").style("fill", "white");
+								return tempColorScale_month(stateWeatherData.TAVG);
+							} else if (selectedTimeGranularity == "MONTH" && stateWeatherData.TAVG < -2) {
+								d3.select("#mouseoverTitle").style("fill", "white");
+								return tempColorScale_month(stateWeatherData.TAVG);
+							} else {
+								d3.select("#mouseoverTitle").style("fill", "black");
+								return tempColorScale_month(stateWeatherData.TAVG);
+							} 
+						} else if (selectedChoroplethAttr == "PDSI" && stateWeatherData.PDSI != null) {
+							if (selectedTimeGranularity == "YEAR" && stateWeatherData.PDSI > 3) {
+								d3.select("#mouseoverTitle").style("fill", "white");
+								return droughtColorScale_year(stateWeatherData.PDSI);
+							} else if (selectedTimeGranularity == "YEAR") {
+								d3.select("#mouseoverTitle").style("fill", "black");
+								return droughtColorScale_year(stateWeatherData.PDSI);
+							} else if (selectedTimeGranularity == "MONTH" && stateWeatherData.PDSI > 4) {
+								d3.select("#mouseoverTitle").style("fill", "white");
+								return droughtColorScale_month(stateWeatherData.PDSI);
+							} else {
+								d3.select("#mouseoverTitle").style("fill", "black");
+								return droughtColorScale_month(stateWeatherData.PDSI);
+							}
+							return droughtColorScale_month(stateWeatherData.PDSI);
+						} else {
+							d3.select("#mouseoverTitle").style("fill", "black");
+							return "none";
+						}
+					});
+					d3.select("#detailBox").append("text")
+						.attr("x", 30)
+						.attr("y", 75)
+						.style("font-size", 20)
+						.style("font-family","Arial")
+						.text(stateWeatherData.PCP == null ? "Precip: N/A" : "Precip: " + stateWeatherData.PCP + " inches");
+					d3.select("#detailBox").append("text")
+						.attr("x", 30)
+						.attr("y", 100)
+						.style("font-size", 20)
+						.style("font-family","Arial")
+						.text(stateWeatherData.TAVG == null ? "Avg temp: N/A" : "Avg temp: " + stateWeatherData.TAVG + " F");
+					d3.select("#detailBox").append("text")
+						.attr("x", 30)
+						.attr("y", 125)
+						.style("font-size", 20)
+						.style("font-family","Arial")
+						.text(stateWeatherData.PDSI == null ? "Drought sev: N/A" : "Drought sev: " + stateWeatherData.PDSI);
+				});
+				map.selectAll(".state").on("mouseout", function(d) {
+					map.selectAll(".state").style("stroke-width", 1);
+					d3.select("#mouseoverBox").style("fill", "none");
+					d3.select("#mouseoverBox").text("");
+					d3.select("#mouseoverTitle").text("");
+					d3.select("#detailBox").text("");
+					d3.select("#titleBox").style("stroke-width", 0);
+					d3.select("#titleBox").style("fill", "none");
+				});
+			}
+			function fireMouseover(d, eventType) {
+				if (eventType == "mouseover") {
+					d3.select("#mouseoverBox").style("fill", "white");
+					d3.select("#titleBox").style("stroke-width", 3);
+					d3.select("#titleBox").style("fill", d3.rgb(255, 85, 0));
+					d3.select("#titleBox").style("opacity", 0.6);
+					d3.select("#mouseoverTitle").style("fill", "black");
+					d3.select("#mouseoverTitle").style("font-size", function() {
+						if (d.FIRE_NAME.length > 22) {
+							return 16;
+						} else if (d.FIRE_NAME.length < 13) {
+							return 25;
+						} else {
+							return 20;
+						}
+					});
+					d3.select("#mouseoverTitle").text(d.FIRE_NAME);
+					d3.select("#detailBox").append("text")
+						.attr("x", 10)
+						.attr("y", 25)
+						.style("font-size", 20)
+						.text("Fire cause: " + d.STAT_CAUSE_DESCR.toLowerCase());
+					d3.select("#detailBox").append("text")
+						.attr("x", 10)
+						.attr("y", 50)
+						.style("font-size", 20)
+						.text("Acres burned: " + d.FIRE_SIZE.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ","));
+					d3.select("#detailBox").append("text")
+						.attr("x", 10)
+						.attr("y", 75)
+						.style("font-size", 20)
+						.text("State of fire origin: " + d.STATE);
+					d3.select("#detailBox").append("text")
+						.attr("x", 10)
+						.attr("y", 100)
+						.style("font-size", 20)
+						.text("Discovery day-of-year: " + String(d.DISCOVERY_DOY));
+					let timeToContainment = null
+					if (d.DISCOVERY_DATE != null && d.CONT_DATE != null) {
+						timeToContainment = String(d.CONT_DATE - d.DISCOVERY_DATE);
+					} else {
+						timeToContainment = "N/A"
+					}
+					d3.select("#detailBox").append("text")
+						.attr("x", 10)
+						.attr("y", 125)
+						.style("font-size", 20)
+						.text("Days to containment: " + timeToContainment);
+				} else { // eventType == "mouseout"
+					d3.select("#mouseoverBox").style("fill", "none");
+					d3.select("#mouseoverBox").text("");
+					d3.select("#mouseoverTitle").text("");
+					d3.select("#mouseoverTitle").style("font-size", 30);
+					d3.select("#detailBox").text("");
+					d3.select("#titleBox").style("stroke-width", 0);
+					d3.select("#titleBox").style("fill", "none");
+					d3.select("#titleBox").style("opacity", 1);
+				}
+			}
+			// donut mouseover 
+			function donutMouseover(outerR, innerR, donutData) {
+				let donut = d3.select("#donut");
+				// let legend = d3.select("#donutLegend");
+				let donutWidth = donut.attr("width");
+				let donutHeight = donut.attr("height");
+				let dictionary = {};
+				// transfer donutData to dictionary key=id, val ={cause,incidents}
+				for (let i=0; i<donutData.length; i++){
+					let dictId = donutData[i].id.replace(" ","");
+					let finalId = dictId.replace("/", "");
+					dictionary[finalId] = {"cause":donutData[i].cause, "incidents":donutData[i].incidents};
+				}
+				donut.selectAll(".cause").on("click", function(d){
+					let currentId = this.id;
+					for (let i=0; i<donutData.length; i++){
+						let seg = donutData[i];
+						let filter = seg.cause.replace(" ", "");
+						let segId = filter.replace("/", "");
+						if (currentId == segId) {
+							let causeBool = causeClicked[currentId];
+							if (causeBool == false) {
+								causeClicked[currentId] = true;
+								// give selected segment a dark outline
+								let segCol = causeColors[donutData[i].cause];
+								let decCol = function (num) {
+									let diff = 30;
+									if(num<diff){
+										return "00";
+									}else if(num<diff+16){
+										return "0"+(num-diff).toString(16);
+									}
+									return (num-diff).toString(16);
+								};
+								let newCol = "#" + decCol(parseInt(segCol.substring(1,3),16)) + decCol(parseInt(segCol.substring(3,5),16)) + decCol(parseInt(segCol.substring(5,7),16));
+								d3.select("#"+segId)
+									.attr("stroke-width", 3)
+									.attr("stroke", newCol);
+							// hide title 
+								d3.select("#donutTitle")
+									.style("display", "none");
+							} else {
+								causeClicked[currentId] = false;
+								d3.select("#"+segId)
+									//.attr("stroke-width", 3)
+									.attr("stroke", causeColors[donutData[i].cause]);
+								// show title
+								d3.select("#donutTitle")
+									.style("display", "block");
+							}
+						}
+					}
+					
+					updateChoropleth();
+				});
+				donut.selectAll(".cause").on("mouseover", function(d) {
+					// only allow hover functionality if no cause filter selected
+					// check to see that no causeClicked[cause] is set to true 
+					// let causeFilter = false; 
+					// for (let cause in causeClicked) {
+					// 	if (causeClicked[cause]==true) {
+					// 		causeFilter = true;
+					// 	}
+					// }
+					//if (causeFilter==false) {
+					if(true){
+						d3.select("#donutLegend")
+							.transition().duration(400)
+							.attr("opacity", .8)
+							.attr("r", (innerR-13)*1.1);
+						d3.select("#deselectText").attr("fill", "none");
+						let edges = d3.arc()
+								.outerRadius(outerR*1.07)
+								.innerRadius(innerR)
+								.padAngle(.03)
+								.padRadius(70);
+						for (let i=0; i<donutData.length; i++) {
+							let currentId = this.id;
+							let seg = donutData[i];
+							let filter = seg.cause.replace(" ", "");
+							let segId = filter.replace("/", "");
+							if (currentId == segId) {
+								d3.select("#"+segId)
+									.transition().duration(350)
+									.attr("d", edges);
+							let txtIncident = dictionary[currentId].incidents;
+							let txtCause = dictionary[currentId].cause;
+							let x = outerR;
+							let y = outerR;
+							let legend = donut.append("g")
+									.attr("id", "txtGroup")
+									.append("text")
+									.attr("id", currentId+"txt")
+									.attr("x", x)
+									.attr("y", y)
+									.style("opacity", .75)
+									.attr("text-anchor", "middle")
+									.text(txtCause);
+							d3.select("#txtGroup").append("text")
+									.attr("id", currentId+"incTxt")
+									.attr("x", x)
+									.attr("y", y+20)
+									.style("opacity", .5)
+									.attr("text-anchor", "middle")
+									.text(txtIncident);
+							}
+						}
+					}
+				});
+				donut.selectAll(".cause").on("mouseout", function(d){
+					let edges = d3.arc()
+							.outerRadius(outerR)
+							.innerRadius(innerR)
+					for (let i=0; i<donutData.length; i++) {
+						let seg = donutData[i];
+						let filter = seg.cause.replace(" ", "");
+						let segId = filter.replace("/", "");
+						if (this.id == segId) {
+							if(causeClicked[this.id]==false){
+								d3.select("#"+segId)
+									.transition().duration(350)
+									.attr("d", edges);
+							}
+							d3.select("#"+segId+"txt").remove();
+							d3.select("#"+segId+"incTxt").remove();
+						}
+					}
+					d3.select("#donutLegend")
+						.transition().duration(400)
+						.attr("opacity", .5)
+						.attr("r", (innerR-13));
+					d3.select("#deselectText").attr("fill", "slategrey");
+				});
+			}
+		</script>
+
+	</div>
+	<footer>
+		<div id="asterix">
+			*Class-G wildfires are wildfires that have burned more than 5,000 total acres before containment.
+		</div>
+		<div id="sources">
+			Wildfire data retrieved from <a href="https://www.kaggle.com/rtatman/188-million-us-wildfires">https://www.kaggle.com</a><br>
+			Weather data retrieved from <a href="https://www7.ncdc.noaa.gov/CDO/CDODivisionalSelect.jsp#">https://www.ncdc.noaa.gov</a>
+		</div>
+	</footer>
+	
+</body>
+ 
+</html>

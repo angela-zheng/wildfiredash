@@ -1,2 +1,1 @@
-# wildfiredash
-Class project for data-driven web applications
+# cs3300_p2

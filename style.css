@@ -1,0 +1,110 @@
+body {
+    margin-top: 5%;
+    margin-bottom: 5%;
+}
+.radioTxt {
+    font-family:helvetica;
+}
+.outline {
+	stroke: white;
+	stroke-width: 1px;
+	fill: none;
+}
+
+.state {
+	fill: lightgrey;
+}
+
+#slider {
+    display: block;
+}
+
+#sliderlegend {
+	position: absolute;
+	top: 340px;
+	left: 5vw;
+}
+
+#slider {
+	top: 180px;
+    text-align:center;
+}
+
+#mapWrapperDiv {
+    text-align: center;
+}
+
+#choroplethAttrSelector {
+	text-align: center;
+}
+
+#textArea {
+    padding-left: 20px;
+    color: grey;
+    font-family: Arial;
+    margin: 20px 20vw 0px 20vw;
+    text-align: center justify;
+}
+
+#asterix {
+    margin: 50px 20px 0px 20px;
+    font-family: Arial;
+    text-align: center;
+}
+
+#sources {
+    margin: 20px 20px 0px 20px; 
+    font-family: Arial;
+    text-align: center;
+}
+
+a:link {
+  color: rgba(13, 81, 146, 1);
+  text-decoration: none;
+}
+
+a:visited {
+  color: rgba(13, 81, 146, 1);
+}
+
+a:hover {
+  color: rgba(53, 121, 186, 1);
+}
+
+a:active {
+  color: rgba(13, 81, 146, 1);
+}
+
+button.overlayButton { 
+    border:0px; 
+    padding: 7px; 
+    font-size: 15px; 
+    font-family: Arial;
+    background-color: white; 
+    color: rgba(34, 139, 236, 1); 
+    width: 250px; 
+    margin: 10px 20px 0 0; 
+}
+
+button.overlayButton:hover { 
+    background-color: rgba(34, 139, 236, 1); 
+    color: #fff; 
+}
+
+button.overlayButtonSelected { 
+    background-color: rgba(34, 139, 236, 1); 
+    color: #fff; 
+}
+
+#txtGroup{
+    text-align: center;
+    font-family: helvetica;
+}
+
+#timeGranularitySelector {
+    font-family: helvetica;
+}
+
+#asterix, #sources {
+    opacity: .6;
+}

@@ -1,0 +1,50 @@
+﻿State,WeatherCode,MapCode
+Alabama,1,1
+Alaska,50,2
+Arizona,2,4
+Arkansas,3,5
+California,4,6
+Colorado,5,8
+Connecticut,6,9
+Delaware,7,10
+Florida,8,12
+Georgia,9,13
+Idaho,10,16
+Illinois,11,17
+Indiana,12,18
+Iowa,13,19
+Kansas,14,20
+Kentucky,15,21
+Louisiana,16,22
+Maine,17,23
+Maryland,18,24
+Massachusetts,19,25
+Michigan,20,26
+Minnesota,21,27
+Mississippi,22,28
+Missouri,23,29
+Montana,24,30
+Nebraska,25,31
+Nevada,26,32
+New Hampshire,27,33
+New Jersey,28,34
+New Mexico,29,35
+New York,30,36
+North Carolina,31,37
+North Dakota,32,38
+Ohio,33,39
+Oklahoma,34,40
+Oregon,35,41
+Pennsylvania,36,42
+Rhode Island,37,44
+South Carolina,38,45
+South Dakota,39,46
+Tennessee,40,47
+Texas,41,48
+Utah,42,49
+Vermont,43,50
+Virginia,44,51
+Washington,45,53
+West Virginia,46,54
+Wisconsin,47,55
+Wyoming,48,56

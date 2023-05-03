@@ -9,7 +9,7 @@ This dashboard was developed for my Data-Driven Web Applications course. Visuali
 Dashboard Overall 
 <img src = "readme_ss/ss1.png">
 Interactivity 
-<img src = "readme_ss/ss2_interactivity.png"/>
+<img src = "readme_ss/ss2_interactive.png"/>
 
 # Data
 ## Weather Data 
